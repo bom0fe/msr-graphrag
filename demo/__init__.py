@@ -1,1 +1,1 @@
-"""데모 패키지 (Streamlit 앱 + 컴포넌트)."""
+"""Streamlit demo package."""
