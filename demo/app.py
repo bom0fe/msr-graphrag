@@ -10,6 +10,7 @@ import streamlit as st
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from demo import components as C
+from demo.sample_data import load_demo_dataset
 from msr_graphrag.backends import build_backend
 from msr_graphrag.baselines.naive_rag import NaiveConfig, NaiveRAG, PassageIndex
 from msr_graphrag.controller.msr_controller import ControllerConfig
@@ -45,10 +46,23 @@ def load_pipeline(
         )
         strategy = "heuristic" if backend_kind == "mock" else kg_strategy
     else:
-        examples = load_examples(os.path.join(data_dir, dataset, "examples.json"))
-        corpus = load_corpus(os.path.join(data_dir, dataset, "corpus.json"))
-        backend = build_backend(backend_kind, model_name=model)
-        strategy = kg_strategy
+        sample_mode = data_dir.strip().lower() in {"", "built-in demo samples"}
+        examples_path = os.path.join(data_dir, dataset, "examples.json")
+        corpus_path = os.path.join(data_dir, dataset, "corpus.json")
+        if sample_mode or not (os.path.exists(examples_path) and os.path.exists(corpus_path)):
+            examples, corpus = load_demo_dataset(dataset)
+            oracle = {e.question: e.answer for e in examples}
+            backend = (
+                build_backend("mock", answer_oracle=oracle)
+                if backend_kind == "mock"
+                else build_backend(backend_kind, model_name=model)
+            )
+            strategy = "heuristic" if backend_kind == "mock" else kg_strategy
+        else:
+            examples = load_examples(examples_path)
+            corpus = load_corpus(corpus_path)
+            backend = build_backend(backend_kind, model_name=model)
+            strategy = kg_strategy
 
     rag = MSRGraphRAG(backend, kg_backend="native", kg_strategy=strategy)
     rag.index(corpus.documents(), verbose=False)
@@ -102,7 +116,11 @@ model = st.sidebar.text_input(
 dataset = st.sidebar.selectbox(
     "Dataset", ["toy", "hotpotqa", "2wiki", "musique"], index=0
 )
-data_dir = st.sidebar.text_input("Processed data directory", value="data/processed")
+data_dir = st.sidebar.text_input(
+    "Processed data directory",
+    value="Built-in demo samples",
+    help="Leave as built-in samples to show two curated examples per benchmark.",
+)
 kg_strategy = st.sidebar.selectbox("KG construction", ["llm", "heuristic"], index=1)
 
 st.sidebar.markdown("---")
@@ -142,6 +160,9 @@ st.markdown(
 **Recording guide:** choose a question, run MSR-GraphRAG, then show the
 confidence gauge, component bars, ConfGap timeline, evidence graph, trace table,
 and Naive RAG comparison.
+
+Each benchmark option includes two built-in demo examples, so HotpotQA,
+2WikiMultihopQA, and MuSiQue can be shown without downloading data.
 """
 )
 
