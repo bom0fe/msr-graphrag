@@ -24,56 +24,73 @@ def load_demo_dataset(name: str) -> Tuple[List[QAExample], Corpus]:
 def _hotpotqa_examples() -> List[QAExample]:
     q1_passages = [
         Passage(
-            "Inception",
-            "Inception is a 2010 science fiction action film written and directed by "
-            "Christopher Nolan. The film stars Leonardo DiCaprio as a professional thief.",
+            "Arrival",
+            "Arrival is a 2016 science fiction film directed by Denis Villeneuve. "
+            "The film is based on Story of Your Life by Ted Chiang.",
             True,
             "hotpot_demo_1",
         ),
         Passage(
-            "Christopher Nolan",
-            "Christopher Nolan is a British-American filmmaker. He directed films such as "
-            "Memento, The Dark Knight, Inception, Interstellar, and Oppenheimer.",
+            "Story of Your Life",
+            "Story of Your Life is a science fiction novella by American writer Ted Chiang. "
+            "It won the Nebula Award for Best Novella.",
             True,
             "hotpot_demo_1",
         ),
         Passage(
-            "Leonardo DiCaprio",
-            "Leonardo DiCaprio is an American actor who starred in Titanic, Inception, "
-            "The Revenant, and The Wolf of Wall Street.",
+            "Ted Chiang",
+            "Ted Chiang is an American science fiction writer. His novella Story of Your "
+            "Life was adapted into the film Arrival.",
+            True,
+            "hotpot_demo_1",
+        ),
+        Passage(
+            "Denis Villeneuve",
+            "Denis Villeneuve is a Canadian filmmaker who directed Arrival, Blade Runner "
+            "2049, Dune, and other films.",
             False,
             "hotpot_demo_1",
         ),
         Passage(
-            "Interstellar",
-            "Interstellar is a 2014 science fiction film directed by Christopher Nolan.",
+            "Nebula Award for Best Novella",
+            "The Nebula Award for Best Novella is presented by the Science Fiction and "
+            "Fantasy Writers Association.",
             False,
             "hotpot_demo_1",
         ),
     ]
     q2_passages = [
         Passage(
-            "Pride and Prejudice",
-            "Pride and Prejudice is an 1813 novel of manners written by Jane Austen.",
+            "The Social Network",
+            "The Social Network is a 2010 biographical drama film directed by David "
+            "Fincher. The screenplay was written by Aaron Sorkin.",
             True,
             "hotpot_demo_2",
         ),
         Passage(
-            "Jane Austen",
-            "Jane Austen was an English novelist known for Sense and Sensibility, "
-            "Pride and Prejudice, Mansfield Park, Emma, and Persuasion.",
+            "David Fincher",
+            "David Fincher directed The Social Network. He also directed Gone Girl, "
+            "Zodiac, Fight Club, and Se7en.",
             True,
             "hotpot_demo_2",
         ),
         Passage(
-            "Emma",
-            "Emma is a novel by Jane Austen, first published in 1815.",
-            False,
+            "Fight Club",
+            "Fight Club is a 1999 film directed by David Fincher. It is based on the "
+            "1996 novel Fight Club by Chuck Palahniuk.",
+            True,
             "hotpot_demo_2",
         ),
         Passage(
-            "Charles Dickens",
-            "Charles Dickens was an English writer known for Oliver Twist and Great Expectations.",
+            "Chuck Palahniuk",
+            "Chuck Palahniuk is an American novelist who wrote the novel Fight Club.",
+            True,
+            "hotpot_demo_2",
+        ),
+        Passage(
+            "Aaron Sorkin",
+            "Aaron Sorkin is an American screenwriter who wrote the screenplay for "
+            "The Social Network.",
             False,
             "hotpot_demo_2",
         ),
@@ -81,21 +98,21 @@ def _hotpotqa_examples() -> List[QAExample]:
     return [
         QAExample(
             "hotpot_demo_1",
-            "Who directed the film Inception?",
-            "Christopher Nolan",
-            gold_titles=["Inception", "Christopher Nolan"],
+            "Who wrote the novella that the film Arrival is based on?",
+            "Ted Chiang",
+            gold_titles=["Arrival", "Story of Your Life", "Ted Chiang"],
             passages=q1_passages,
-            num_hops=2,
+            num_hops=3,
             qtype="bridge",
             dataset="hotpotqa",
         ),
         QAExample(
             "hotpot_demo_2",
-            "Which author wrote the novel Pride and Prejudice?",
-            "Jane Austen",
-            gold_titles=["Pride and Prejudice", "Jane Austen"],
+            "Who wrote the novel that another David Fincher film, Fight Club, was based on?",
+            "Chuck Palahniuk",
+            gold_titles=["The Social Network", "David Fincher", "Fight Club", "Chuck Palahniuk"],
             passages=q2_passages,
-            num_hops=2,
+            num_hops=4,
             qtype="bridge",
             dataset="hotpotqa",
         ),
@@ -105,55 +122,71 @@ def _hotpotqa_examples() -> List[QAExample]:
 def _two_wiki_examples() -> List[QAExample]:
     q1_passages = [
         Passage(
-            "The Martian",
-            "The Martian is a 2015 science fiction film directed by Ridley Scott. "
-            "It is based on Andy Weir's novel of the same name.",
+            "Blade Runner 2049",
+            "Blade Runner 2049 is a 2017 science fiction film directed by Denis "
+            "Villeneuve. It is a sequel to Blade Runner.",
             True,
             "2wiki_demo_1",
         ),
         Passage(
-            "Ridley Scott",
-            "Ridley Scott is an English film director and producer. He directed Alien, "
-            "Blade Runner, Gladiator, The Martian, and other films.",
+            "Blade Runner",
+            "Blade Runner is a 1982 science fiction film directed by Ridley Scott. "
+            "It is loosely based on Philip K. Dick's novel Do Androids Dream of Electric Sheep?",
             True,
             "2wiki_demo_1",
         ),
         Passage(
-            "Andy Weir",
-            "Andy Weir is an American novelist known for The Martian and Project Hail Mary.",
-            False,
+            "Do Androids Dream of Electric Sheep?",
+            "Do Androids Dream of Electric Sheep? is a 1968 science fiction novel by "
+            "Philip K. Dick.",
+            True,
             "2wiki_demo_1",
         ),
         Passage(
-            "Gladiator",
-            "Gladiator is a historical epic film directed by Ridley Scott.",
+            "Philip K. Dick",
+            "Philip K. Dick was an American science fiction writer whose works inspired "
+            "films including Blade Runner, Total Recall, and Minority Report.",
+            True,
+            "2wiki_demo_1",
+        ),
+        Passage(
+            "Denis Villeneuve",
+            "Denis Villeneuve directed Arrival, Blade Runner 2049, Dune, and Sicario.",
             False,
             "2wiki_demo_1",
         ),
     ]
     q2_passages = [
         Passage(
-            "The Lord of the Rings",
-            "The Lord of the Rings is an epic high-fantasy novel by J. R. R. Tolkien.",
+            "The Imitation Game",
+            "The Imitation Game is a 2014 biographical drama film about Alan Turing. "
+            "It stars Benedict Cumberbatch as Alan Turing.",
             True,
             "2wiki_demo_2",
         ),
         Passage(
-            "J. R. R. Tolkien",
-            "J. R. R. Tolkien was an English writer, philologist, and academic. "
-            "He authored The Hobbit and The Lord of the Rings.",
+            "Alan Turing",
+            "Alan Turing was an English mathematician and computer scientist. He worked "
+            "at Bletchley Park during World War II.",
             True,
             "2wiki_demo_2",
         ),
         Passage(
-            "The Hobbit",
-            "The Hobbit is a children's fantasy novel by J. R. R. Tolkien.",
-            False,
+            "Bletchley Park",
+            "Bletchley Park was the principal centre of Allied code-breaking during "
+            "World War II. It is located in Milton Keynes, England.",
+            True,
             "2wiki_demo_2",
         ),
         Passage(
-            "C. S. Lewis",
-            "C. S. Lewis was a British writer known for The Chronicles of Narnia.",
+            "Milton Keynes",
+            "Milton Keynes is a city and unitary authority area in Buckinghamshire, England.",
+            True,
+            "2wiki_demo_2",
+        ),
+        Passage(
+            "Benedict Cumberbatch",
+            "Benedict Cumberbatch portrayed Alan Turing in The Imitation Game.",
             False,
             "2wiki_demo_2",
         ),
@@ -161,22 +194,26 @@ def _two_wiki_examples() -> List[QAExample]:
     return [
         QAExample(
             "2wiki_demo_1",
-            "Who directed the film adaptation of Andy Weir's novel The Martian?",
-            "Ridley Scott",
-            gold_titles=["The Martian", "Ridley Scott"],
+            "Who wrote the novel that inspired the predecessor of Blade Runner 2049?",
+            "Philip K. Dick",
+            gold_titles=[
+                "Blade Runner 2049",
+                "Blade Runner",
+                "Do Androids Dream of Electric Sheep?",
+                "Philip K. Dick",
+            ],
             passages=q1_passages,
-            num_hops=2,
+            num_hops=4,
             qtype="bridge",
             dataset="2wiki",
         ),
         QAExample(
             "2wiki_demo_2",
-            "Who wrote the epic fantasy novel The Lord of the Rings?",
-            "J. R. R. Tolkien",
-            answer_aliases=["Tolkien"],
-            gold_titles=["The Lord of the Rings", "J. R. R. Tolkien"],
+            "In which city is the code-breaking centre where Alan Turing worked located?",
+            "Milton Keynes",
+            gold_titles=["The Imitation Game", "Alan Turing", "Bletchley Park", "Milton Keynes"],
             passages=q2_passages,
-            num_hops=2,
+            num_hops=4,
             qtype="bridge",
             dataset="2wiki",
         ),
