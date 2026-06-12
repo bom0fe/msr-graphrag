@@ -1,0 +1,1222 @@
+Title
+=====
+Metacognitive Self-Regulating Graph Retrieval-Augmented Generation:
+A Detailed Experimental Report for MSR-GraphRAG
+
+
+Abstract
+========
+This report summarizes the design, implementation, experimental setup,
+validation, and empirical results of the MSR-GraphRAG system evaluated in the
+local project directory. The system targets multi-hop question answering with a
+graph-based retrieval-augmented generation pipeline. Its central idea is to
+replace fixed-depth graph traversal with a metacognitive controller that decides
+at each retrieval step whether the current evidence is sufficient. The decision
+is based on a scalar Confidence Gap computed from three complementary signals:
+Evidence Coverage Score (ECS), Path Coherence Score (PCS), and Answer
+Generability Score (AGS).
+
+The final GPU experiments were run with Qwen2.5-7B-Instruct on three
+multi-hop QA datasets: HotpotQA, 2WikiMultihopQA, and MuSiQue. Each dataset was
+evaluated with 300 examples. The final local result directory is
+result_claim_full. The main result is that MSR-GraphRAG substantially improves
+over the graph_fixed baseline, increasing macro F1 from 0.0221 to 0.2305 while
+reducing average retrieval steps from 6.8711 to 3.1344 and reducing average
+tokens from 44,229.76 to 12,517.85. This corresponds to 54.38% step savings and
+71.70% token savings versus the fixed graph baseline. However, the simple naive
+retrieval baseline achieved higher F1 than MSR-GraphRAG on all three datasets in
+this run. Therefore, the strongest defensible claim from the current results is
+not state-of-the-art accuracy, but rather that the metacognitive controller
+greatly improves graph-based iterative retrieval efficiency and accuracy
+relative to an ungated fixed graph expansion baseline.
+
+
+1. Introduction
+===============
+Retrieval-augmented generation (RAG) is commonly used to improve factual
+question answering by retrieving external context and conditioning an LLM on the
+retrieved evidence. Multi-hop QA settings are particularly difficult because the
+answer often requires chaining multiple pieces of evidence across documents,
+entities, or events. GraphRAG-style systems address this by representing
+documents, entities, and relations as a graph and retrieving evidence through
+graph traversal rather than purely independent vector search.
+
+The core challenge is that graph traversal introduces a control problem. If the
+system retrieves too little, it may stop before reaching the evidence required
+for the final answer. If it retrieves too much, it wastes compute and may inject
+irrelevant evidence that distracts the answer generator. Fixed-depth retrieval is
+a simple solution, but it is inherently inefficient because easy questions and
+hard questions receive the same traversal budget. It also does not provide an
+explicit estimate of whether the current evidence state is sufficient.
+
+MSR-GraphRAG addresses this by adding a metacognitive self-regulation layer. At
+each retrieval stride, the system asks a structured question: "Is the current
+evidence sufficient to answer now?" If yes, it stops early. If no, it expands the
+graph in a direction chosen according to the weakest diagnostic signal. This
+turns graph retrieval from a fixed-budget procedure into an adaptive procedure.
+
+
+2. Research Objective
+=====================
+The practical goal of this project is to evaluate whether a self-regulating
+GraphRAG controller can reduce retrieval cost while preserving or improving
+answer quality. More specifically, the experiments test the following claims:
+
+1. A Confidence Gap controller can avoid unnecessary graph expansion compared
+   with fixed graph traversal.
+
+2. The controller can improve the quality of graph-based iterative retrieval by
+   stopping when evidence is sufficient and expanding when evidence is
+   insufficient.
+
+3. The individual signals ECS, PCS, and AGS provide useful but incomplete views
+   of evidence sufficiency; their combination should be more robust than any
+   single signal alone.
+
+4. The method should be evaluated not only by answer accuracy, but also by
+   retrieval steps, token consumption, latency, and number of model calls.
+
+
+3. Method Overview
+==================
+3.1 System Name
+---------------
+The implemented system is MSR-GraphRAG, short for Metacognitive Self-Regulating
+GraphRAG.
+
+3.2 Core Loop
+-------------
+The system follows a stride-wise retrieval loop:
+
+1. Analyze the question and extract query entities.
+2. Select graph seed nodes related to those entities.
+3. Retrieve an evidence subgraph.
+4. Score the current evidence state with ECS, PCS, and AGS.
+5. Compute Confidence Gap.
+6. If Confidence Gap is below the stopping threshold tau, stop and generate the
+   final answer.
+7. Otherwise, expand the graph according to the weakest signal and repeat until
+   max_steps is reached.
+
+3.3 Confidence Gap
+------------------
+The controller uses the following score. In the implementation, inactive or
+unavailable signals are assigned zero weight and the remaining active weights
+are renormalized before computing confidence:
+
+  Confidence(S) = (w_ecs * ECS + w_pcs * PCS + w_ags * AGS)
+                  / (w_ecs + w_pcs + w_ags)
+  ConfGap(S)   = 1 - Confidence(S)
+
+The final code default and the result_final experiment use:
+
+  alpha = 0.45 for ECS
+  beta  = 0.40 for PCS
+  gamma = 0.15 for AGS
+
+The default stopping rule is:
+
+  STOP   if ConfGap < tau
+  EXPAND otherwise
+
+The experiments used tau = 0.30 and max_steps = 7.
+
+3.4 Evidence Coverage Score (ECS)
+---------------------------------
+ECS measures whether the entities implied by the question are represented in the
+current retrieved evidence. Intuitively, it asks whether the graph has reached
+the key entities needed by the question. A low ECS means the retrieved subgraph
+is likely missing some important question entity. In that case, the expansion
+policy tends to perform breadth-oriented expansion by adding or searching for
+uncovered entity seeds.
+
+The implementation computes ECS as question-entity recall over the currently
+selected graph nodes. Let Q be the list of entities extracted from the question
+and let V_S be the selected evidence nodes in the current retrieval state. Both
+question entities and graph node names are normalized before matching. A question
+entity is counted as covered if its normalized form exactly matches a selected
+node or if either normalized string contains the other. The score is:
+
+  ECS(S) = |covered question entities| / max(|Q|, 1)
+
+If no question entities are extracted, ECS is set to 1.0. This prevents the
+controller from treating entity extraction failure as automatic evidence
+failure. The scorer also records the covered and missing entity lists; missing
+entities are used in the rationale and guide breadth expansion when ECS is the
+weakest active signal.
+
+3.5 Path Coherence Score (PCS)
+------------------------------
+PCS measures whether the retrieved evidence graph is structurally connected. It
+is designed to capture whether retrieved evidence pieces form a coherent
+multi-hop path rather than isolated fragments. A low PCS suggests that the
+system may have relevant pieces but has not connected them into a usable chain.
+In that case, the expansion policy tends to perform depth-oriented expansion to
+connect graph components.
+
+The implementation computes PCS from the induced subgraph over the current
+selected nodes. Let n be the number of nodes in this subgraph and let c be the
+number of connected components. The score is:
+
+  PCS(S) = 1 - (c - 1) / max(n, 1)
+
+The value is clipped at a minimum of 0.0. If the subgraph has one node, PCS is
+1.0 because there is no disconnected evidence yet. If the subgraph has zero
+nodes, PCS is 0.0. As more selected evidence nodes belong to separate connected
+components, PCS decreases. This makes PCS a structural coherence signal rather
+than a semantic relevance signal.
+
+3.6 Answer Generability Score (AGS)
+-----------------------------------
+AGS estimates whether the current evidence is sufficient for the language model
+to generate an answer confidently. In the Hugging Face backend, this can use
+logit-derived signals during a short answer draft generation step. In the final
+experiments, AGS used the margin_entropy signal setting. A low AGS indicates
+that the graph may look structurally plausible, but the model still cannot
+confidently generate the answer. In that case, the expansion policy can perform
+depth_pivot expansion around important graph nodes.
+
+The implementation computes AGS by asking the backend model to produce a short
+draft answer using only the current evidence. The prompt explicitly instructs
+the model to output UNKNOWN when the evidence is insufficient. The backend is
+called with token-level logit tracing enabled. AGS is then derived from the
+draft's token-level confidence signals.
+
+For margin-based confidence, the system computes the average nonnegative gap
+between the top-1 and top-2 token log probabilities:
+
+  margin = mean(max(logp_top1_t - logp_top2_t, 0))
+  C_margin = 1 - exp(-lambda * margin)
+
+For entropy-based confidence, the system computes average token entropy and maps
+lower entropy to higher confidence:
+
+  entropy = mean(token_entropy_t)
+  C_entropy = 1 - min(entropy / h_max, 1)
+
+For normalized negative log likelihood, the system maps lower NLL to higher
+confidence:
+
+  nll = -mean(chosen_token_logprob_t)
+  C_nll = exp(-nll / scale)
+
+The final experiments used the margin_entropy setting, so AGS was:
+
+  AGS(S) = 0.5 * (C_margin + C_entropy)
+
+If the draft answer looks like an abstention, for example UNKNOWN,
+"insufficient", "not enough", or "cannot determine", AGS is multiplied by the
+abstain penalty of 0.35. If logits are unavailable, AGS is treated as inactive:
+its weight is set to zero and ECS/PCS are renormalized. This design prevents
+missing logit support from silently lowering the final confidence score.
+
+3.7 Why the Three Signals Are Complementary
+-------------------------------------------
+The three signals diagnose different failure modes:
+
+ECS detects missing question entities. PCS detects disconnected or incoherent
+evidence. AGS detects cases where the model cannot confidently answer from the
+current evidence, even if the graph appears structurally adequate.
+
+Using only ECS can ignore graph connectivity and answerability. Using only PCS
+can stop early once a graph component is connected, even if important entities
+are missing. Using only AGS can ignore graph structure and rely too heavily on
+model confidence. The full MSR setting is intended to combine these signals into
+a more balanced stopping and expansion policy.
+
+
+4. Implementation Summary
+=========================
+The project is implemented as a modular Python codebase. The most relevant
+components are:
+
+data/loaders.py:
+  Dataset loading and preprocessing for HotpotQA, 2WikiMultihopQA, and MuSiQue.
+  The final code includes corrected direct Hugging Face loading paths and JSON
+  parsing handling for dataset-specific formats.
+
+retrieval/query_analyzer.py:
+  Question entity extraction. This is important because extracted entities
+  determine ECS and the initial graph seeds.
+
+retrieval/graph_retriever.py:
+  Graph seed selection and graph expansion logic.
+
+scorer/metacognitive_scorer.py:
+  ECS, PCS, AGS, Confidence Gap, STOP/EXPAND decisions, and routing selection.
+
+controller/msr_controller.py:
+  The iterative retrieval controller that repeatedly calls the scorer and
+  retriever until stopping or max_steps.
+
+pipeline/answer_generator.py:
+  Final answer generation and answer cleanup. The improved version includes
+  post-processing to reduce chatty model outputs and make predictions more
+  compatible with EM/F1 evaluation.
+
+eval/runner.py:
+  Experiment runner that builds or reuses the graph and evaluates each system
+  variant on each dataset/model cell.
+
+eval/metrics.py:
+  EM, F1, average steps, token usage, latency, and model call aggregation.
+
+analysis/visualize_results.py:
+  Plot generation and summary table creation. This file was updated so that
+  confgap_timeline.png includes the model name in the title and dataset/qid
+  information in the legend.
+
+analysis/summarize_claims.py:
+  Summary logic for comparing MSR against the graph_fixed baseline and producing
+  claim_summary.json.
+
+scripts/07_run_full_claim_pipeline.py:
+  Full pipeline script used to run corpus construction, main experiments,
+  ablations, plots, claim summary, and tests.
+
+
+5. Experimental Setup
+=====================
+5.1 Hardware and Runtime
+------------------------
+The full GPU experiments were executed on a remote machine with an NVIDIA RTX
+3090 GPU. During the Qwen2.5-7B-Instruct runs, GPU memory usage was observed at
+approximately 19-20 GB, with the GPU utilization generally at 100% during active
+model inference. After completion, GPU memory returned to idle.
+
+5.2 Model
+---------
+The main model used for the final experiments was:
+
+  Qwen/Qwen2.5-7B-Instruct
+
+The result files use the sanitized model tag:
+
+  Qwen_Qwen2.5-7B-Instruct
+
+5.3 Backend
+-----------
+The final main experiments used the Hugging Face transformers backend:
+
+  --backend hf
+
+The ablation stage in the final pipeline used the mock backend for lightweight
+component/tau/weight sweeps:
+
+  --backend mock
+
+This means the main reported Qwen numbers are real GPU model runs, while the
+ablation_mock directory is best interpreted as lightweight diagnostic output
+rather than a full Qwen ablation study.
+
+5.4 Datasets
+------------
+The final experiment used three multi-hop QA datasets:
+
+1. HotpotQA
+2. 2WikiMultihopQA
+3. MuSiQue
+
+Each dataset was sampled with:
+
+  n = 300 examples
+
+The processed local files are stored in:
+
+  result_claim_full/data_processed
+
+The processed corpus sizes were:
+
+  HotpotQA: 300 examples, 2,988 passages
+  2Wiki:   300 examples, 2,091 passages
+  MuSiQue: 300 examples, 4,680 passages
+
+5.5 Graph Construction
+----------------------
+The final run used:
+
+  --kg-strategy heuristic
+
+Thus the graph was constructed using the project's heuristic/native graph path
+rather than a full LLM-extracted graph. This is important for interpretation:
+the reported numbers evaluate the metacognitive controller and graph traversal
+under a heuristic graph construction regime.
+
+5.6 Controller Settings
+-----------------------
+The main run used:
+
+  max_steps = 7
+  tau = 0.30
+  ags_signal = margin_entropy
+
+The default signal weights were:
+
+  ECS weight alpha = 0.3
+  PCS weight beta  = 0.3
+  AGS weight gamma = 0.4
+
+5.7 Output Directory
+--------------------
+The final local output directory is:
+
+  result_claim_full
+
+Important subdirectories:
+
+  result_claim_full/main
+    Main Qwen2.5-7B-Instruct result JSON files.
+
+  result_claim_full/figures
+    Plots and summary_table.csv.
+
+  result_claim_full/ablation_mock
+    Mock-backend ablation results.
+
+  result_claim_full/logs
+    Execution logs, including pytest and resume logs.
+
+  result_claim_full/demo
+    Demo run log.
+
+
+6. Compared Systems
+===================
+6.1 msr_full
+------------
+The full MSR-GraphRAG system. It uses ECS, PCS, and AGS together, applies the
+Confidence Gap stopping rule, and enables routing based on the weakest signal.
+
+6.2 graph_fixed
+---------------
+A fixed graph expansion baseline. It disables adaptive routing and effectively
+serves as a high-cost graph traversal baseline. In this run, graph_fixed uses
+many retrieval steps and many tokens, and it performs poorly in answer accuracy.
+It is the primary baseline used by claim_summary.json to measure graph-based
+retrieval efficiency improvements.
+
+6.3 naive
+---------
+A non-graph retrieval baseline. It uses passage retrieval rather than the
+iterative graph controller. In this run, naive is very efficient in latency and
+tokens and achieves the highest F1 on all three datasets. This is the most
+important limitation for final performance claims.
+
+6.4 ecs_only
+------------
+An ablation of MSR that uses only Evidence Coverage Score. PCS and AGS are
+disabled. This tests whether entity coverage alone is sufficient to regulate
+retrieval.
+
+6.5 pcs_only
+------------
+An ablation of MSR that uses only Path Coherence Score. ECS and AGS are
+disabled. This tests whether graph connectivity alone is sufficient.
+
+6.6 ags_only
+------------
+An ablation of MSR that uses only Answer Generability Score. ECS and PCS are
+disabled. This tests whether model confidence alone is sufficient.
+
+6.7 no_routing
+--------------
+An MSR variant that keeps the metacognitive scoring but disables adaptive
+routing. This helps separate the effect of stopping from the effect of choosing
+expansion direction.
+
+
+7. Evaluation Metrics
+=====================
+The final results are evaluated with:
+
+EM:
+  Exact Match between predicted answer and gold answer.
+
+F1:
+  Token-level F1 between predicted and gold answer. This is the primary answer
+  quality metric discussed in this report.
+
+avg_steps:
+  Average number of retrieval steps. Lower is better if answer quality is
+  preserved.
+
+avg_tokens:
+  Average token usage per example. Lower indicates better inference efficiency.
+
+avg_latency_s:
+  Average latency per example in seconds.
+
+avg_calls:
+  Average number of model calls per example.
+
+step_savings_vs_baseline_pct:
+  Percentage step reduction relative to graph_fixed.
+
+token_savings_vs_baseline_pct:
+  Percentage token reduction relative to graph_fixed.
+
+
+8. Main Results
+===============
+8.1 Macro Summary Against graph_fixed
+-------------------------------------
+The claim summary reports the following macro averages over the three datasets:
+
+  MSR F1:                 0.2305
+  graph_fixed F1:         0.0221
+  MSR average steps:      3.1344
+  graph_fixed steps:      6.8711
+  MSR average tokens:     12,517.85
+  graph_fixed tokens:     44,229.76
+  Step savings:           54.38%
+  Token savings:          71.70%
+
+This is the strongest positive result. Compared with a fixed graph traversal
+baseline, the Confidence Gap controller both improves answer quality and greatly
+reduces retrieval cost.
+
+8.2 Dataset-Level Main Results
+------------------------------
+The following table summarizes the main Qwen2.5-7B-Instruct results:
+
+Dataset: 2Wiki
+  msr_full:
+    EM = 0.2100
+    F1 = 0.2291
+    avg_steps = 2.2267
+    avg_tokens = 8,945.23
+    avg_latency_s = 3.2120
+    avg_calls = 4.2267
+  graph_fixed:
+    EM = 0.0067
+    F1 = 0.0217
+    avg_steps = 6.8100
+    avg_tokens = 45,561.88
+    avg_latency_s = 17.7071
+    avg_calls = 8.8100
+  naive:
+    EM = 0.2700
+    F1 = 0.3067
+    avg_steps = 7.0000
+    avg_tokens = 1,537.09
+    avg_latency_s = 0.7346
+    avg_calls = 1.0000
+
+Dataset: HotpotQA
+  msr_full:
+    EM = 0.2133
+    F1 = 0.2990
+    avg_steps = 3.1433
+    avg_tokens = 12,037.83
+    avg_latency_s = 3.9964
+    avg_calls = 5.1433
+  graph_fixed:
+    EM = 0.0067
+    F1 = 0.0176
+    avg_steps = 6.8800
+    avg_tokens = 44,007.97
+    avg_latency_s = 15.9227
+    avg_calls = 8.8800
+  naive:
+    EM = 0.4667
+    F1 = 0.5790
+    avg_steps = 7.0000
+    avg_tokens = 1,656.57
+    avg_latency_s = 0.7180
+    avg_calls = 1.0000
+
+Dataset: MuSiQue
+  msr_full:
+    EM = 0.1267
+    F1 = 0.1633
+    avg_steps = 4.0333
+    avg_tokens = 16,570.50
+    avg_latency_s = 5.4443
+    avg_calls = 6.0333
+  graph_fixed:
+    EM = 0.0167
+    F1 = 0.0270
+    avg_steps = 6.9233
+    avg_tokens = 43,119.43
+    avg_latency_s = 15.7442
+    avg_calls = 8.9233
+  naive:
+    EM = 0.1900
+    F1 = 0.2462
+    avg_steps = 7.0000
+    avg_tokens = 1,573.89
+    avg_latency_s = 0.7278
+    avg_calls = 1.0000
+
+8.3 MSR vs graph_fixed
+----------------------
+MSR strongly outperforms graph_fixed on every dataset:
+
+2Wiki:
+  F1 increases from 0.0217 to 0.2291.
+  Steps decrease from 6.81 to 2.2267.
+  Tokens decrease from 45,561.88 to 8,945.23.
+  Step savings = 67.30%.
+  Token savings = 80.37%.
+
+HotpotQA:
+  F1 increases from 0.0176 to 0.2990.
+  Steps decrease from 6.88 to 3.1433.
+  Tokens decrease from 44,007.97 to 12,037.83.
+  Step savings = 54.31%.
+  Token savings = 72.65%.
+
+MuSiQue:
+  F1 increases from 0.0270 to 0.1633.
+  Steps decrease from 6.9233 to 4.0333.
+  Tokens decrease from 43,119.43 to 16,570.50.
+  Step savings = 41.74%.
+  Token savings = 61.57%.
+
+Interpretation:
+The adaptive controller is doing useful work relative to fixed graph traversal.
+It stops earlier on many examples, substantially reduces token cost, and avoids
+the extremely poor answer quality observed from graph_fixed. The result suggests
+that uncontrolled or fixed graph expansion can be actively harmful, likely
+because it retrieves too much noisy evidence or causes the answer generator to
+condition on bloated context. MSR reduces this failure mode by making explicit
+STOP/EXPAND decisions.
+
+8.4 MSR vs naive
+----------------
+The naive baseline is stronger than MSR in answer accuracy in this run:
+
+2Wiki:
+  naive F1 = 0.3067
+  msr_full F1 = 0.2291
+
+HotpotQA:
+  naive F1 = 0.5790
+  msr_full F1 = 0.2990
+
+MuSiQue:
+  naive F1 = 0.2462
+  msr_full F1 = 0.1633
+
+Naive is also cheaper in tokens and latency:
+
+2Wiki:
+  naive tokens = 1,537.09
+  msr_full tokens = 8,945.23
+
+HotpotQA:
+  naive tokens = 1,656.57
+  msr_full tokens = 12,037.83
+
+MuSiQue:
+  naive tokens = 1,573.89
+  msr_full tokens = 16,570.50
+
+Interpretation:
+This is the main negative result. The current graph construction and graph
+retrieval path are not yet competitive with the naive retriever in answer
+accuracy or efficiency. The graph pipeline improves strongly over graph_fixed,
+but the naive retriever remains a stronger practical baseline for final answer
+quality. Therefore, any final claim should avoid saying that MSR is the best
+overall method. The correct claim is narrower: MSR is a strong control mechanism
+for graph-based iterative retrieval, but the current heuristic graph pipeline
+still needs improvement to surpass strong non-graph retrieval.
+
+
+9. Difficulty Analysis
+======================
+9.1 2Wiki
+---------
+2Wiki contained 227 easy examples and 73 hard examples in the processed sample.
+
+For MSR:
+  Easy F1 = 0.2488
+  Hard F1 = 0.1678
+  Easy avg_steps = 2.2819
+  Hard avg_steps = 2.0548
+
+For graph_fixed:
+  Easy F1 = 0.0211
+  Hard F1 = 0.0236
+  Easy avg_steps = 6.7753
+  Hard avg_steps = 6.9178
+
+Interpretation:
+MSR improves substantially over graph_fixed for both easy and hard subsets. The
+average step count is low for both subsets, indicating early stopping. However,
+the hard subset remains substantially lower in F1 than the easy subset. The
+controller reduces cost, but hard examples still expose limitations in retrieval
+quality or answer generation.
+
+9.2 HotpotQA
+------------
+All 300 HotpotQA examples in this sample are marked as easy in the current
+difficulty grouping.
+
+For MSR:
+  F1 = 0.2990
+  avg_steps = 3.1433
+  avg_tokens = 12,037.83
+
+For graph_fixed:
+  F1 = 0.0176
+  avg_steps = 6.88
+  avg_tokens = 44,007.97
+
+Interpretation:
+The HotpotQA result is the strongest MSR result in absolute F1 among the three
+datasets. The method improves dramatically over graph_fixed while using less
+than half the retrieval steps and much fewer tokens. However, naive performs far
+better on HotpotQA, suggesting that HotpotQA may be particularly well served by
+direct passage retrieval and that the current graph representation may be losing
+or diluting useful evidence.
+
+9.3 MuSiQue
+-----------
+MuSiQue contained 172 easy, 78 medium, and 50 hard examples.
+
+For MSR:
+  Easy F1 = 0.1889
+  Medium F1 = 0.1209
+  Hard F1 = 0.1410
+  Easy avg_steps = 3.3779
+  Medium avg_steps = 4.7051
+  Hard avg_steps = 5.2400
+
+For graph_fixed:
+  Easy F1 = 0.0383
+  Medium F1 = 0.0098
+  Hard F1 = 0.0151
+  Easy avg_steps = 6.9012
+  Medium avg_steps = 6.9231
+  Hard avg_steps = 7.0000
+
+Interpretation:
+MuSiQue is the hardest dataset in this run. MSR adapts its step count according
+to difficulty: easy examples stop after about 3.38 steps on average, medium
+examples require about 4.71 steps, and hard examples require about 5.24 steps.
+This is important evidence that the controller is not merely stopping at a fixed
+average depth. It expands more for more difficult examples. The answer quality
+still remains modest, but the adaptive step behavior supports the intended
+self-regulation mechanism.
+
+
+10. Ablation Analysis
+=====================
+The main summary_table.csv includes component variants for the Qwen main run.
+The ablation_mock directory also contains lightweight mock-backend diagnostic
+ablation files. The following analysis focuses on the Qwen rows in
+summary_table.csv.
+
+10.1 2Wiki Component Results
+----------------------------
+2Wiki:
+  msr_full F1 = 0.2291, avg_steps = 2.2267
+  ecs_only F1 = 0.2207, avg_steps = 1.9667
+  pcs_only F1 = 0.2195, avg_steps = 1.0633
+  ags_only F1 = 0.1834, avg_steps = 5.0067
+  no_routing F1 = 0.2224, avg_steps = 1.9967
+
+Interpretation:
+On 2Wiki, msr_full is slightly better than the single-signal variants and
+no_routing, though the margin is small. pcs_only is very efficient in steps but
+slightly lower in F1. ags_only is both more expensive and less accurate,
+suggesting that model-confidence-only expansion is insufficient for this
+dataset.
+
+10.2 HotpotQA Component Results
+-------------------------------
+HotpotQA:
+  msr_full F1 = 0.2990, avg_steps = 3.1433
+  ecs_only F1 = 0.3062, avg_steps = 3.0433
+  pcs_only F1 = 0.2730, avg_steps = 1.1100
+  ags_only F1 = 0.2791, avg_steps = 5.0000
+  no_routing F1 = 0.2263, avg_steps = 2.9167
+
+Interpretation:
+On HotpotQA, ecs_only is slightly higher than msr_full. This suggests that
+entity coverage is a particularly strong signal for this sample, while the full
+weighted combination may sometimes continue or stop in a way that slightly hurts
+HotpotQA F1. However, the margin is small: 0.3062 versus 0.2990. The no_routing
+variant is notably worse than msr_full, which supports the usefulness of routing
+for HotpotQA.
+
+10.3 MuSiQue Component Results
+------------------------------
+MuSiQue:
+  msr_full F1 = 0.1633, avg_steps = 4.0333
+  ecs_only F1 = 0.1713, avg_steps = 3.3100
+  pcs_only F1 = 0.1568, avg_steps = 1.1333
+  ags_only F1 = 0.1405, avg_steps = 5.9567
+  no_routing F1 = 0.1196, avg_steps = 3.7700
+
+Interpretation:
+On MuSiQue, ecs_only is again slightly higher than msr_full in F1, but msr_full
+outperforms pcs_only, ags_only, and no_routing. The no_routing drop is
+especially meaningful, because MuSiQue is the most complex dataset in this run.
+This suggests that adaptive expansion direction helps in harder multi-hop
+settings. Still, the fact that ecs_only slightly beats msr_full indicates that
+the current weights or AGS behavior may need tuning.
+
+10.4 Overall Component Interpretation
+-------------------------------------
+The component analysis does not show a clean universal dominance of msr_full
+over every ablation. Instead, it shows:
+
+1. ECS is a strong signal across these datasets.
+2. PCS-only is very cheap but often sacrifices accuracy.
+3. AGS-only is expensive and weaker than expected.
+4. no_routing often underperforms msr_full, especially on HotpotQA and MuSiQue.
+5. The full controller is useful, but the current weight setting may not be
+   optimal.
+
+This suggests a clear next research direction: tune or learn the ECS/PCS/AGS
+weights per dataset or per question type, and improve AGS calibration so that it
+adds value without causing unnecessary expansion.
+
+
+11. Visualization Outputs
+=========================
+The final figures are stored in:
+
+  result_claim_full/figures
+
+Generated files include:
+
+  frontier_accuracy_vs_tokens.png
+  frontier_accuracy_vs_steps.png
+  steps_by_difficulty.png
+  ablation_component.png
+  tau_sweep.png
+  confgap_timeline.png
+  conf_gap.png
+  summary_table.csv
+
+The confgap_timeline figure was updated after the final run so that the model
+name is visible in the title:
+
+  ConfGap trajectory - Qwen/Qwen2.5-7B-Instruct
+
+The same updated figure was also saved as:
+
+  result_claim_full/figures/conf_gap.png
+
+This makes the figure easier to interpret in a paper or presentation, because
+the plotted Confidence Gap trajectories are now explicitly tied to the model.
+
+
+12. Execution and Validation
+============================
+The final pipeline completed successfully. The resume log shows:
+
+  musique main experiment ended successfully.
+  04_ablation_mock completed with code 0.
+  05_plots completed with code 0.
+  06_claim_summary completed with code 0.
+  pytest completed with code 0.
+  demo smoke completed.
+
+The pytest log reports:
+
+  14 passed in 0.59s
+
+The local plot regeneration after modifying confgap_timeline also completed
+successfully:
+
+  7 figure(s) generated in result_claim_full/figures
+
+The plotting code was syntax-checked with:
+
+  python -m py_compile analysis/visualize_results.py
+
+This passed without errors.
+
+
+13. Main Findings
+=================
+Finding 1: MSR substantially improves over graph_fixed.
+------------------------------------------------------
+Across all three datasets, MSR improves answer F1 and greatly reduces retrieval
+cost relative to graph_fixed. This validates the central idea that fixed graph
+expansion is inefficient and that metacognitive stopping is useful.
+
+Finding 2: MSR adapts retrieval effort to dataset difficulty.
+------------------------------------------------------------
+The MuSiQue difficulty breakdown shows a clear increase in average steps from
+easy to medium to hard examples. This supports the claim that the controller is
+not using a fixed budget in disguise. It retrieves more when questions are
+harder.
+
+Finding 3: The current graph pipeline is not yet stronger than naive retrieval.
+------------------------------------------------------------------------------
+The naive baseline achieved higher F1 and lower token usage on all three
+datasets. This is the most important empirical limitation. The current graph
+construction and retrieval strategy need further improvement before claiming
+overall superiority.
+
+Finding 4: ECS appears especially strong.
+-----------------------------------------
+ecs_only is competitive with or slightly better than msr_full on HotpotQA and
+MuSiQue. This suggests that entity coverage is a strong predictor of evidence
+sufficiency in the current implementation. It also suggests that the default
+full signal weights may not be optimal.
+
+Finding 5: AGS-only is not enough.
+----------------------------------
+ags_only tends to be more expensive and lower performing than msr_full and
+ecs_only. This indicates that model confidence alone is insufficient for
+controlling graph retrieval. AGS may need better calibration or should be used as
+a secondary signal rather than a dominant expansion driver.
+
+Finding 6: Routing matters.
+---------------------------
+no_routing underperforms msr_full on HotpotQA and MuSiQue. This supports the
+design choice of using the weakest signal not only to decide whether to expand,
+but also to choose how to expand.
+
+
+14. Recommended Final Claim
+===========================
+The current results support the following careful claim:
+
+  MSR-GraphRAG introduces a metacognitive Confidence Gap controller for
+  graph-based iterative retrieval. On 300-example samples from HotpotQA,
+  2WikiMultihopQA, and MuSiQue using Qwen2.5-7B-Instruct, MSR-GraphRAG
+  substantially improves over a fixed graph traversal baseline, raising macro F1
+  from 0.0221 to 0.2305 while reducing average retrieval steps by 54.38% and
+  average token usage by 71.70%. The results show that adaptive stopping and
+  signal-guided graph expansion can make GraphRAG-style retrieval substantially
+  more efficient and more accurate than ungated fixed graph expansion.
+
+The current results do not support the stronger claim that MSR-GraphRAG is the
+best overall retrieval method, because the naive passage retrieval baseline
+achieved higher F1 and lower token usage in this run.
+
+
+15. Limitations
+===============
+15.1 Naive Baseline Superiority
+-------------------------------
+The strongest limitation is that naive retrieval outperforms MSR in F1 on all
+three datasets. This means the current system is not yet competitive as a
+general-purpose QA method. Its strength is currently as a controller for graph
+retrieval, not as an overall best-performing QA pipeline.
+
+15.2 Heuristic Graph Construction
+---------------------------------
+The final experiments used heuristic graph construction. The quality of GraphRAG
+depends heavily on graph quality. If the graph misses important relations or
+adds noisy edges, even a good controller may not retrieve the right evidence.
+Future runs should compare heuristic KG construction with LLM-based KG
+extraction and, if available, LightRAG-built graph artifacts.
+
+15.3 Default Weight Setting
+---------------------------
+The default alpha/beta/gamma weights may not be optimal. ecs_only was highly
+competitive, suggesting that the current full weighted combination can sometimes
+underuse the strongest signal or overreact to weaker signals.
+
+15.4 AGS Calibration
+--------------------
+AGS-only was relatively weak and expensive. This suggests that the current AGS
+signal may not be sufficiently calibrated. It may need normalization by dataset,
+question type, evidence length, or answer type.
+
+15.5 Sample Size
+----------------
+Each dataset used 300 examples. This is useful for development and comparative
+analysis, but full benchmark claims would require larger or full test/dev set
+runs, multiple random seeds or sample splits, and confidence intervals.
+
+15.6 Mock Ablation Caveat
+-------------------------
+The ablation_mock directory was produced with the mock backend. It is useful for
+pipeline diagnostics and plotting, but should not be presented as a full
+Qwen2.5-7B ablation result. The Qwen component rows in summary_table.csv are
+more relevant for model-backed interpretation.
+
+
+16. Suggested Future Improvements
+=================================
+16.1 Improve Graph Construction
+-------------------------------
+The graph_fixed result is extremely weak, and MSR still trails naive retrieval.
+This points to graph quality as a likely bottleneck. Recommended improvements:
+
+1. Run LLM-based KG extraction for a smaller but higher-quality experiment.
+2. Compare heuristic KG, LLM KG, and LightRAG KG construction.
+3. Add relation confidence scores and filter low-quality edges.
+4. Preserve evidence passage IDs more explicitly so final answer generation can
+   use compact but faithful context.
+
+16.2 Hybrid Naive + Graph Retrieval
+-----------------------------------
+Because naive retrieval is strong, a promising direction is to combine it with
+MSR rather than treat it only as a baseline. For example:
+
+1. Use naive top-k passages to initialize graph seeds.
+2. Use graph expansion only when naive evidence has high uncertainty.
+3. Let MSR decide between passage expansion and graph expansion.
+4. Use naive retrieval as a fallback when graph confidence remains low.
+
+16.3 Tune ECS/PCS/AGS Weights
+-----------------------------
+The current default weights are hand-chosen. The results suggest that ECS should
+possibly receive higher weight, while AGS may need lower or conditional weight.
+Recommended experiments:
+
+1. Grid search alpha/beta/gamma on a validation split.
+2. Tune weights separately per dataset.
+3. Tune weights by difficulty level.
+4. Learn a small calibration model over ECS, PCS, AGS, and evidence length.
+
+16.4 Improve AGS
+----------------
+AGS should measure answerability, but the current results show it is not strong
+alone. Improvements may include:
+
+1. Use answer-type-aware prompts.
+2. Compare margin, entropy, normalized NLL, and combined signals.
+3. Calibrate AGS against actual answer correctness on a held-out set.
+4. Penalize abstentions and generic answer drafts more explicitly.
+5. Compute AGS over multiple short drafts rather than a single draft.
+
+16.5 Better Stopping Policy
+---------------------------
+The current policy uses a fixed tau. A learned or adaptive tau may be better:
+
+1. Dataset-specific tau.
+2. Difficulty-aware tau.
+3. Dynamic tau that changes with retrieval step.
+4. Separate stopping thresholds for ECS, PCS, and AGS.
+
+16.6 Full-Scale Experiments
+---------------------------
+Before making stronger paper claims, the following should be run:
+
+1. Full dataset or larger sample experiments.
+2. Multiple random samples.
+3. Confidence intervals or bootstrap significance tests.
+4. Qwen vs Llama model comparison.
+5. Heuristic KG vs LLM KG comparison.
+6. Full Qwen-backed ablation instead of only mock ablation files.
+
+
+17. Conclusion
+==============
+The final experiments show that MSR-GraphRAG successfully implements and
+validates a metacognitive control mechanism for graph-based retrieval. The
+Confidence Gap controller substantially improves over fixed graph traversal,
+achieving much higher F1 while using far fewer retrieval steps and tokens. The
+MuSiQue difficulty analysis further shows that the system adapts retrieval
+effort according to question difficulty, which is a central motivation of the
+method.
+
+At the same time, the experiments reveal that the current graph retrieval
+pipeline is not yet competitive with a strong naive passage retrieval baseline.
+This does not invalidate the metacognitive controller, but it narrows the claim:
+the current contribution is best framed as an adaptive control mechanism that
+makes graph retrieval much more efficient and much less brittle than fixed graph
+expansion. Future work should focus on improving graph construction, hybridizing
+with naive retrieval, calibrating AGS, and tuning ECS/PCS/AGS weights.
+
+The final local artifacts supporting this report are stored in result_claim_full,
+and the final report itself is saved as final_summary.txt in the project root.
+
+
+18. Addendum: Final Re-run with alpha=0.45, beta=0.40, gamma=0.15
+=================================================================
+This addendum records the final GPU re-run requested after modifying the
+Confidence Gap weights. The updated scoring configuration assigns the largest
+weight to evidence coverage, a nearly equal weight to path coherence, and a
+smaller but still active weight to answer generability:
+
+1. alpha = 0.45 for ECS.
+2. beta = 0.40 for PCS.
+3. gamma = 0.15 for AGS.
+4. tau = 0.30 for the main MSR stopping threshold.
+
+The run was executed on the remote GPU server through SSH, using an NVIDIA
+GeForce RTX 3090. The experiment reused the already processed datasets from the
+remote working directory and regenerated all final artifacts into a new
+result_final directory. After completion, the entire result_final directory was
+copied back into the local project root.
+
+
+18.1 Execution Status and Local Artifacts
+----------------------------------------
+The final re-run completed successfully. No experiment process remained active
+after completion, and GPU memory returned to idle state. The local result
+directory now contains the following artifact groups:
+
+1. result_final/main:
+   Qwen2.5-7B-Instruct main results for HotpotQA, 2WikiMultihopQA, and MuSiQue.
+
+2. result_final/ablation_mock:
+   Mock-backend ablations for component removal, tau sweeps, and
+   alpha/beta/gamma weight sweeps for all three datasets.
+
+3. result_final/figures:
+   The regenerated plots, including ablation_component.png,
+   confgap_timeline.png, frontier_accuracy_vs_steps.png,
+   frontier_accuracy_vs_tokens.png, steps_by_difficulty.png, tau_sweep.png,
+   and summary_table.csv.
+
+4. result_final/logs:
+   Execution logs for the main experiments, ablations, plotting, claim summary,
+   pytest validation, and demo smoke run.
+
+5. result_final/claim_summary.json:
+   A compact machine-readable summary of the main claim metrics.
+
+The validation log reports that all tests passed:
+
+    15 passed in 0.58s
+
+
+18.2 Final Main Results
+-----------------------
+The main final re-run used Qwen/Qwen2.5-7B-Instruct with the Hugging Face
+backend. Each dataset was evaluated on 300 examples. The macro result across
+HotpotQA, 2WikiMultihopQA, and MuSiQue is:
+
+1. MSR-GraphRAG macro F1: 0.2249.
+2. Fixed graph baseline macro F1: 0.0210.
+3. MSR average retrieval steps: 2.3878.
+4. Fixed graph average retrieval steps: 6.8711.
+5. MSR average tokens: 8,596.7433.
+6. Fixed graph average tokens: 44,083.55.
+7. Step savings versus fixed graph: 65.25%.
+8. Token savings versus fixed graph: 80.50%.
+
+This is a stronger efficiency result than the previous result_claim_full run.
+The previous run reported 54.38% step savings and 71.70% token savings versus
+the fixed graph baseline. The new weights therefore made the controller more
+aggressive about stopping early while still preserving a large advantage over
+fixed graph traversal in F1.
+
+
+18.3 Dataset-Level Results
+--------------------------
+For 2WikiMultihopQA, MSR-GraphRAG achieved EM 0.2033 and F1 0.2222, compared
+with fixed graph EM 0.0067 and F1 0.0171. Average retrieval steps decreased
+from 6.81 to 1.71, and average tokens decreased from 45,648.55 to 6,557.54.
+This corresponds to 74.89% step savings and 85.63% token savings. The result
+shows the clearest efficiency gain among the three datasets.
+
+For HotpotQA, MSR-GraphRAG achieved EM 0.2033 and F1 0.2932, compared with
+fixed graph EM 0.0100 and F1 0.0179. Average retrieval steps decreased from
+6.88 to 2.4367, and average tokens decreased from 44,111.53 to 8,219.17. This
+corresponds to 64.58% step savings and 81.37% token savings. HotpotQA remains
+the strongest dataset for absolute F1 in the final re-run.
+
+For MuSiQue, MSR-GraphRAG achieved EM 0.1200 and F1 0.1593, compared with
+fixed graph EM 0.0167 and F1 0.0279. Average retrieval steps decreased from
+6.9233 to 3.0167, and average tokens decreased from 42,490.57 to 11,013.52.
+This corresponds to 56.43% step savings and 74.08% token savings. MuSiQue is
+the most difficult dataset in the final run, but the adaptive controller still
+substantially improves over fixed graph traversal.
+
+
+18.4 Comparison with Other Systems in the Summary Table
+-------------------------------------------------------
+The summary_table.csv file also includes naive, ECS-only, PCS-only, AGS-only,
+and no-routing systems. These results are important for interpreting what can
+and cannot be claimed.
+
+The naive baseline remains stronger in answer accuracy:
+
+1. On 2WikiMultihopQA, naive F1 is 0.3067, while MSR F1 is 0.2222.
+2. On HotpotQA, naive F1 is 0.5790, while MSR F1 is 0.2932.
+3. On MuSiQue, naive F1 is 0.2462, while MSR F1 is 0.1593.
+
+Therefore, the final result should not be presented as state-of-the-art answer
+accuracy or as a universal improvement over simple passage retrieval. The
+defensible claim is narrower and more precise: with the current heuristic graph
+construction, MSR-GraphRAG is much better than fixed graph expansion and gives a
+strong cost-control mechanism for graph-based iterative retrieval.
+
+The single-signal systems also reveal useful behavior. PCS-only is extremely
+cheap because it tends to stop quickly, but it is not consistently better than
+the full controller. ECS-only can achieve comparable or slightly higher F1 on
+some datasets, but it often uses more steps than PCS-only. AGS-only is weaker
+than the full controller in most Qwen-backed main results, especially on
+2WikiMultihopQA. These patterns suggest that PCS is useful for early stopping,
+ECS is useful for evidence sufficiency, and AGS still needs better calibration.
+
+
+18.5 Difficulty Analysis
+------------------------
+The final claim_summary.json includes difficulty-level metrics. 2WikiMultihopQA
+contains easy and hard examples in the processed split. MSR obtains F1 0.2405
+on easy examples and F1 0.1650 on hard examples. Interestingly, the hard subset
+uses fewer average steps than the easy subset in this run, which suggests that
+the controller may be stopping early even when difficult examples still need
+more evidence. This is a useful diagnostic signal for future threshold tuning.
+
+MuSiQue contains easy, medium, and hard examples. The pattern is more intuitive
+there: MSR obtains F1 0.2000 on easy examples, 0.1098 on medium examples, and
+0.0964 on hard examples. Average retrieval steps increase from 2.4884 on easy
+examples to 3.5769 on medium examples and 3.9600 on hard examples. This shows
+that the controller does allocate more retrieval effort to harder MuSiQue
+examples, which supports the adaptive-retrieval motivation of the method.
+
+
+18.6 Mock Ablation Results
+--------------------------
+The mock ablations should be interpreted as controller-behavior diagnostics
+rather than final answer-quality evidence, because the answer generation backend
+is mock rather than Qwen2.5-7B-Instruct. Still, the ablations are useful because
+they isolate how each controller setting changes steps and token usage.
+
+In the component ablation, PCS-only and AGS-only often stop very early and use
+few tokens. However, early stopping alone is not a sufficient research claim:
+the main Qwen-backed results show that full MSR is the relevant system for
+actual answer generation, while the mock component results mainly show the
+control policy's sensitivity.
+
+In the tau sweep, tau=0.50 is the cheapest and often gives the highest mock F1
+among the tested tau values. For example, it is best on HotpotQA and MuSiQue in
+the mock ablation and ties on 2WikiMultihopQA. However, this does not
+automatically mean tau=0.50 should replace tau=0.30 in the main Qwen setting.
+The mock backend does not faithfully measure final answer generation quality.
+The result is best treated as evidence that a higher stopping threshold deserves
+a real Qwen-backed validation run.
+
+In the weight sweep, the new weight setting alpha=0.45, beta=0.40, gamma=0.15
+is competitive but not uniformly optimal in the mock setting. On 2WikiMultihopQA
+all tested weights tie on mock F1 0.0282, with lower-gamma or higher-gamma
+settings differing mostly in cost. On HotpotQA, alpha=0.33, beta=0.33,
+gamma=0.34 and alpha=0.40, beta=0.40, gamma=0.20 obtain slightly higher mock
+F1 than the final setting. On MuSiQue, alpha=0.40, beta=0.40, gamma=0.20 ties
+the final setting in F1 while using fewer steps and tokens. This suggests that
+the final alpha=0.45, beta=0.40, gamma=0.15 setting is a reasonable efficiency-
+oriented setting, but the best final paper claim should still include a
+validation-tuned weight search rather than presenting these weights as globally
+optimal.
+
+
+18.7 Updated Claim After the Final Re-run
+-----------------------------------------
+The strongest final claim supported by result_final is:
+
+MSR-GraphRAG with alpha=0.45, beta=0.40, and gamma=0.15 substantially improves
+fixed graph traversal for graph-based multi-hop retrieval. Across three
+datasets and 900 total examples, it improves macro F1 from 0.0210 to 0.2249
+while reducing retrieval steps by 65.25% and token consumption by 80.50%.
+
+The claim should include the following caveats:
+
+1. The system does not outperform the naive passage-retrieval baseline in
+   answer accuracy.
+2. The current graph construction is heuristic and likely limits absolute
+   performance.
+3. The ablation suite is mock-backed, so it supports controller diagnostics but
+   not final answer-quality claims.
+4. The final weights are promising for efficiency but should be tuned on a
+   validation split before being treated as optimal.
+
+The result_final experiment therefore strengthens the paper's efficiency and
+adaptive-control argument, but it does not remove the need for better graph
+construction, hybrid retrieval, and Qwen-backed ablations before making a
+stronger final performance claim.

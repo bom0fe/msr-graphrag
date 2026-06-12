@@ -1,0 +1,58 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Environments and local config
+.venv/
+venv/
+env/
+.env
+.env.*
+*.local
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# Generated experiment outputs
+result/
+result_*/
+results/
+results_*/
+outputs/
+runs/
+wandb/
+mlruns/
+
+# Large downloaded or cached data/model files
+/data/
+/datasets/
+checkpoints/
+*.ckpt
+*.pt
+*.pth
+*.safetensors
+*.bin
+
+# Logs and temporary files
+*.log
+*.tmp
+*.temp
+
+# Local SSH/session artifacts
+.codex_known_hosts*
+known_hosts*
+
+# OS/editor files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

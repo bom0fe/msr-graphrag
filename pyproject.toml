@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "msr-graphrag"
+version = "0.1.0"
+description = "Metacognitive Self-Regulating Agentic GraphRAG: stride-wise confidence-gap gating over a knowledge graph"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "Myeongcheol" }]
+keywords = ["graphrag", "rag", "agentic", "metacognition", "multi-hop-qa", "llm"]
+
+dependencies = [
+    "numpy>=1.24",
+    "networkx>=3.0",
+    "scikit-learn>=1.2",
+    "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+viz = ["matplotlib>=3.7", "plotly>=5.18", "pyvis>=0.3.2", "streamlit>=1.32"]
+data = ["datasets>=2.18,<3"]
+hf = ["torch>=2.1", "transformers>=4.43,<5", "accelerate>=0.30", "sentence-transformers>=2.6"]
+vllm = ["vllm>=0.5.0", "sentence-transformers>=2.6"]
+lightrag = ["lightrag-hku>=1.0.0"]
+all = [
+    "matplotlib>=3.7", "plotly>=5.18", "pyvis>=0.3.2", "streamlit>=1.32",
+    "datasets>=2.18,<3", "torch>=2.1", "transformers>=4.43,<5", "accelerate>=0.30",
+    "sentence-transformers>=2.6",
+]
+
+[tool.setuptools.packages.find]
+include = ["msr_graphrag*"]

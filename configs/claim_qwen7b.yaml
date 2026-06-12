@@ -1,0 +1,48 @@
+# Recommended claim-oriented configuration.
+# Use this for final runs where the goal is a defensible efficiency/quality claim,
+# not just pipeline smoke testing.
+
+experiment:
+  datasets: [hotpotqa, 2wiki, musique]
+  n_samples: 500
+  seed: 42
+  out_dir: result_claim
+
+backend:
+  kind: hf
+  model: Qwen/Qwen2.5-7B-Instruct
+  embed_model: BAAI/bge-small-en-v1.5
+  dtype: bfloat16
+  max_model_len: 8192
+
+kg:
+  backend: native
+  # llm is slower than heuristic, but required for final performance claims.
+  strategy: llm
+
+scorer:
+  alpha: 0.45
+  beta: 0.4
+  gamma: 0.15
+  tau: 0.30
+  ags_signal: margin_entropy
+  ags_lambda: 0.5
+  draft_max_tokens: 48
+  abstain_penalty: 0.35
+  use_ecs: true
+  use_pcs: true
+  use_ags: true
+  enable_routing: true
+
+controller:
+  max_steps: 7
+  min_steps: 1
+
+retriever:
+  seed_top_k: 4
+  seed_threshold: 0.40
+  seed_ego_neighbors: 2
+  breadth_add: 2
+  depth_expand_per_comp: 3
+  pivot_neighbors: 4
+  max_subgraph_nodes: 200

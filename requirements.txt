@@ -1,0 +1,31 @@
+# === 코어 (항상 필요) ===
+numpy>=1.24
+networkx>=3.0
+scikit-learn>=1.2
+PyYAML>=6.0
+
+# === 시각화 / 데모 ===
+matplotlib>=3.7
+plotly>=5.18
+pyvis>=0.3.2
+streamlit>=1.32
+
+# === 데이터셋 (HotpotQA / 2Wiki / MuSiQue) ===
+datasets>=2.18,<3
+
+# === 실제 모델 백엔드 (GPU; 택1 이상) ===
+# transformers 백엔드 (output_scores 로 로짓→AGS)
+torch>=2.1
+transformers>=4.43,<5
+accelerate>=0.30
+sentence-transformers>=2.6
+
+# vLLM 백엔드 (대규모 실험 권장; logprobs)
+# vllm>=0.5.0
+
+# === KG 빌더 (선택: LightRAG) ===
+# lightrag-hku>=1.0.0
+
+# 참고:
+# - mock 백엔드 + 토이 데이터만 쓰면 코어/시각화 패키지만으로 충분(GPU 불필요).
+# - vllm / lightrag-hku 는 환경 의존성이 커 기본 주석 처리. 사용 시 주석 해제.
